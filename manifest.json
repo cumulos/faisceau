@@ -1,0 +1,17 @@
+{
+  "name": "Faisceau",
+  "short_name": "Faisceau",
+  "description": "Jeu de r\u00e9flexion optique 2D. Guidez le faisceau laser de E vers S.",
+  "start_url": "./index.html",
+  "display": "standalone",
+  "background_color": "#0c131b",
+  "theme_color": "#ff3d55",
+  "orientation": "portrait",
+  "icons": [
+    {
+      "src": "icon.png",
+      "sizes": "192x192",
+      "type": "image/png"
+    }
+  ]
+}
