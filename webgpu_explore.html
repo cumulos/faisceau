@@ -1,0 +1,123 @@
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no">
+<title>Faisceau — Exploration WebGPU</title>
+<style>
+body { margin: 0; background: #0c131b; color: #dde6f0; font-family: system-ui, sans-serif; }
+#wrap { max-width: 800px; margin: 0 auto; padding: 16px; }
+canvas { width: 100%; height: auto; background: #16212e; border-radius: 8px; display: block; touch-action: none; }
+.status { margin: 12px 0; font-size: 14px; color: #8a9bb0; }
+button { background: #ff3d55; color: #1a0508; border: 0; padding: 10px 16px; font-weight: 700; cursor: pointer; }
+</style>
+</head>
+<body>
+<div id="wrap">
+  <h1>Faisceau <span style="color:#ff3d55">WebGPU</span></h1>
+  <div class="status" id="status">Initialisation…</div>
+  <canvas id="gpu" width="800" height="600"></canvas>
+  <p><button id="toggle">Basculer faisceau</button></p>
+  <p style="font-size:13px;color:#8a9bb0">Prototype : grille + pièces + faisceau en WebGPU. Fallback SVG si non supporté.</p>
+</div>
+<script>
+const canvas = document.getElementById('gpu');
+const status = document.getElementById('status');
+const btn = document.getElementById('toggle');
+
+let device, context, format, pipeline, bindGroup, uniformBuffer;
+let beamOn = true;
+
+async function init() {
+  if (!navigator.gpu) {
+    status.textContent = 'WebGPU non disponible — utilise le rendu SVG existant.';
+    return;
+  }
+  const adapter = await navigator.gpu.requestAdapter();
+  if (!adapter) { status.textContent = 'Aucun adaptateur WebGPU.'; return; }
+  device = await adapter.requestDevice();
+  context = canvas.getContext('webgpu');
+  format = navigator.gpu.getPreferredCanvasFormat();
+  context.configure({ device, format, alphaMode: 'opaque' });
+
+  const shader = device.createShaderModule({
+    code: `
+      struct Uniforms { beam: f32, time: f32 };
+      @group(0) @binding(0) var<uniform> u: Uniforms;
+
+      @vertex fn vs(@builtin(vertex_index) i: u32) -> @builtin(position) vec4f {
+        var pos = array<vec2f, 6>(
+          vec2f(-1,-1), vec2f(1,-1), vec2f(-1,1),
+          vec2f(-1,1), vec2f(1,-1), vec2f(1,1)
+        );
+        return vec4f(pos[i], 0, 1);
+      }
+
+      @fragment fn fs(@builtin(position) frag: vec4f) -> @location(0) vec4f {
+        let uv = frag.xy / vec2f(800.0, 600.0);
+        let grid = fract(uv * 12.0);
+        let line = smoothstep(0.02, 0.0, min(grid.x, grid.y)) + smoothstep(0.98, 1.0, max(grid.x, grid.y));
+        var col = vec3f(0.09, 0.13, 0.18) + line * 0.15;
+
+        let pieces = array<vec2f, 3>(vec2f(0.3,0.4), vec2f(0.55,0.35), vec2f(0.7,0.6));
+        for (var i = 0u; i < 3u; i++) {
+          let d = length(uv - pieces[i]);
+          if (d < 0.04) col = mix(col, vec3f(0.5, 0.85, 0.9), 0.8);
+        }
+
+        if (u.beam > 0.5) {
+          let beam = abs(uv.y - 0.45 - sin(uv.x * 8.0 + u.time) * 0.02);
+          let glow = exp(-beam * 40.0) * 0.6;
+          let core = exp(-beam * 120.0);
+          col += vec3f(1.0, 0.24, 0.33) * (glow + core);
+        }
+        return vec4f(col, 1.0);
+      }
+    `
+  });
+
+  pipeline = device.createRenderPipeline({
+    layout: 'auto',
+    vertex: { module: shader, entryPoint: 'vs' },
+    fragment: { module: shader, entryPoint: 'fs', targets: [{ format }] },
+    primitive: { topology: 'triangle-list' }
+  });
+
+  uniformBuffer = device.createBuffer({ size: 16, usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST });
+  bindGroup = device.createBindGroup({
+    layout: pipeline.getBindGroupLayout(0),
+    entries: [{ binding: 0, resource: { buffer: uniformBuffer } }]
+  });
+
+  status.textContent = 'WebGPU actif — grille + pièces + faisceau.';
+  requestAnimationFrame(frame);
+}
+
+let t0 = performance.now();
+function frame() {
+  const t = (performance.now() - t0) / 1000;
+  const data = new Float32Array([beamOn ? 1 : 0, t, 0, 0]);
+  device.queue.writeBuffer(uniformBuffer, 0, data);
+
+  const encoder = device.createCommandEncoder();
+  const pass = encoder.beginRenderPass({
+    colorAttachments: [{
+      view: context.getCurrentTexture().createView(),
+      clearValue: { r: 0.05, g: 0.07, b: 0.1, a: 1 },
+      loadOp: 'clear',
+      storeOp: 'store'
+    }]
+  });
+  pass.setPipeline(pipeline);
+  pass.setBindGroup(0, bindGroup);
+  pass.draw(6);
+  pass.end();
+  device.queue.submit([encoder.finish()]);
+  requestAnimationFrame(frame);
+}
+
+btn.onclick = () => { beamOn = !beamOn; };
+init();
+</script>
+</body>
+</html>
