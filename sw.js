@@ -1,5 +1,5 @@
 // Cache hors ligne. Changer le numéro de version à chaque publication.
-const CACHE = 'faisceau-v2';
+const CACHE = 'faisceau-v3';
 const ASSETS = ['./', './index.html', './manifest.json', './icons/icon-192.png', './icons/icon-512.png', './icons/apple-touch-icon.png'];
 
 self.addEventListener('install', (event) => {

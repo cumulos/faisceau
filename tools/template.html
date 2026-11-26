@@ -167,7 +167,7 @@ h2 { font-family: var(--mono); font-weight: 400; font-size: 11px; letter-spacing
       <ul class="legend" id="legend"></ul>
     </div>
 
-    <p class="how">Choisissez une pièce puis touchez une case pour la poser. Touchez une pièce posée pour la pivoter, faites-la glisser pour la déplacer, sortez-la du plateau pour la reprendre. Un faisceau qui heurte un mur fait échouer le tir. Les balises (cercles jaunes) doivent être traversées avant la sortie, et rien ne se pose dessus.<span class="kbd"> Au clavier : Espace lance l'action, les chiffres choisissent une pièce, le clic droit en retire une.</span></p>
+    <p class="how">Choisissez une pièce puis touchez une case pour la poser. Touchez une pièce posée pour la pivoter, faites-la glisser pour la déplacer, sortez-la du plateau pour la reprendre. Un faisceau qui heurte un mur fait échouer le tir. Les balises (cercles en pointillés) doivent être traversées avant la sortie, et rien ne se pose dessus.<span class="kbd"> Au clavier : Espace lance l'action, les chiffres choisissent une pièce, le clic droit en retire une.</span></p>
     <div class="install" id="install" hidden>
       <button class="alt" id="installBtn" type="button" hidden>Installer l'application</button>
       <p class="how" id="iosHint" hidden>Pour installer sur iPhone ou iPad : dans Safari, touchez Partager puis « Sur l'écran d'accueil ».</p>
@@ -203,20 +203,30 @@ function tok(n) { return css.getPropertyValue(n).trim(); }
 var C = { bg: tok('--bg'), table: tok('--table'), line: tok('--line'), wall: tok('--wall'), ink: tok('--ink'),
   muted: tok('--muted'), beam: tok('--beam'), det: tok('--detector'), glass: tok('--glass') };
 
-var NAMES = { M: 'Miroir', U: 'Miroir sans tain', P: 'Prisme', S: 'Séparateur', T: 'Diviseur en T', F: 'Fibre optique' };
-var ART = { M: 'le miroir', U: 'le miroir sans tain', P: 'le prisme', S: 'le séparateur', T: 'le diviseur en T', F: 'la fibre optique' };
+var NAMES = { M: 'Miroir', U: 'Miroir sans tain', P: 'Prisme', S: 'Séparateur', T: 'Diviseur en T', F: 'Fibre optique', D: 'Diffracteur', X: 'Piège à lumière', r: 'Filtre rouge', g: 'Filtre vert', b: 'Filtre bleu' };
+var COL = { R: C.beam, G: '#3ddc84', B: '#4da3ff', W: '#f4f8fc' };
+var GLOW = { R: '#3a0f18', G: '#0f3a22', B: '#10294a', W: '#3c4654' };
+var COLNAME = { R: 'rouge', G: 'vert', B: 'bleu', W: 'blanc' };
+var ART = { M: 'le miroir', U: 'le miroir sans tain', P: 'le prisme', S: 'le séparateur', T: 'le diviseur en T', F: 'la fibre optique', D: 'le diffracteur', X: 'le piège à lumière', r: 'le filtre rouge', g: 'le filtre vert', b: 'le filtre bleu' };
 var DESC = {
   M: 'renvoie le faisceau à 90°, des deux côtés.',
   U: 'renvoie le faisceau à 90° sur sa face brillante, et le laisse passer tout droit par l\'autre face. Quatre positions.',
   P: 'décale le faisceau d\'une case en diagonale, sans changer sa direction.',
   S: 'laisse passer le faisceau et en renvoie une copie à 90°. Chaque sortie doit être éclairée.',
   T: 'coupe le faisceau en deux, un vers la gauche et un vers la droite. Rien ne passe tout droit.',
-  F: 'deux extrémités à poser. Le faisceau entre par l\'une et ressort par l\'autre, dans la même direction.'
+  F: 'deux extrémités à poser. Le faisceau entre par l\'une et ressort par l\'autre, dans la même direction.',
+  D: 'sépare la lumière blanche en trois faisceaux : rouge à gauche, vert tout droit, bleu à droite, dans le sens du faisceau. Une lumière déjà colorée le traverse sans changer.',
+  X: 'absorbe le faisceau qui le touche, sans faire échouer le tir.',
+  r: 'laisse passer le rouge, teinte le blanc en rouge, absorbe le vert et le bleu.',
+  g: 'laisse passer le vert, teinte le blanc en vert, absorbe le rouge et le bleu.',
+  b: 'laisse passer le bleu, teinte le blanc en bleu, absorbe le rouge et le vert.'
 };
 function news(i) {
   var seen = {}, hadChecks = false, out = [];
   for (var n = 0; n < i; n++) { LEVELS[n].pieces.forEach(function (t) { seen[t] = 1; }); if (LEVELS[n].checks.length) hadChecks = true; }
   LEVELS[i].pieces.forEach(function (t) { if (!seen[t]) { seen[t] = 1; out.push('Nouveau : ' + ART[t] + '.'); } });
+  var hadWhite = false; for (var m = 0; m < i; m++) if (LEVELS[m].entry.c === 'W') hadWhite = true;
+  if (!hadWhite && LEVELS[i].entry.c === 'W') out.push('Nouveau : la source est blanche, et chaque sortie n\'accepte que sa couleur.');
   if (!hadChecks && LEVELS[i].checks.length) out.push('Nouveau : les balises, à traverser avant la sortie.');
   return out.join(' ');
 }
@@ -253,6 +263,23 @@ function drawPiece(t, o, parent) {
     el('circle', { r: 0.24, fill: C.glass, 'fill-opacity': 0.25 }, g);
     el('circle', { r: 0.12, fill: '#ffffff' }, g);
     el('circle', { r: 0.06, fill: C.glass }, g);
+  } else if (t === 'D') {
+    // Diffracteur — réseau de traits fins et les trois couleurs produites
+    el('rect', { x: -0.34, y: -0.34, width: 0.68, height: 0.68, rx: 0.08, fill: '#0c131b', stroke: '#c5d4e8', 'stroke-width': 0.05 }, g);
+    [-0.2, -0.1, 0, 0.1, 0.2].forEach(function (x) { el('line', { x1: x, y1: -0.24, x2: x, y2: 0.06, stroke: '#f4f8fc', 'stroke-opacity': 0.75, 'stroke-width': 0.03 }, g); });
+    el('circle', { cx: -0.18, cy: 0.2, r: 0.07, fill: COL.R }, g);
+    el('circle', { cx: 0, cy: 0.2, r: 0.07, fill: COL.G }, g);
+    el('circle', { cx: 0.18, cy: 0.2, r: 0.07, fill: COL.B }, g);
+  } else if (t === 'X') {
+    // Piège à lumière — puits noir
+    el('circle', { r: 0.34, fill: '#04070b', stroke: C.wall, 'stroke-width': 0.07 }, g);
+    el('circle', { r: 0.2, fill: 'none', stroke: C.wall, 'stroke-opacity': 0.5, 'stroke-width': 0.03 }, g);
+    el('circle', { r: 0.08, fill: 'none', stroke: C.wall, 'stroke-opacity': 0.35, 'stroke-width': 0.03 }, g);
+  } else if (t === 'r' || t === 'g' || t === 'b') {
+    // Filtre coloré — pastille de verre teinté dans sa monture
+    var fc = COL[t.toUpperCase()];
+    el('circle', { r: 0.33, fill: fc, 'fill-opacity': 0.4, stroke: fc, 'stroke-width': 0.07 }, g);
+    el('path', { d: 'M -0.18 -0.1 A 0.22 0.22 0 0 1 0.02 -0.22', fill: 'none', stroke: '#ffffff', 'stroke-opacity': 0.7, 'stroke-width': 0.04, 'stroke-linecap': 'round' }, g);
   } else if (t === 'S') {
     // Séparateur — carré verre avec diagonale
     el('rect', { x: -0.34, y: -0.34, width: 0.68, height: 0.68, rx: 0.06, fill: C.glass, 'fill-opacity': 0.2, stroke: C.glass, 'stroke-width': 0.05 }, f);
@@ -300,17 +327,19 @@ function buildBoard() {
       var tx = cx + (horiz ? 0 : s * 0.36), ty = cy + (horiz ? s * 0.36 : 0);
       el('line', { x1: tx - (horiz ? 0.16 : 0), y1: ty - (horiz ? 0 : 0.16), x2: tx + (horiz ? 0.16 : 0), y2: ty + (horiz ? 0 : 0.16), stroke: C.wall, 'stroke-width': 0.09, 'stroke-linecap': 'round' }, board);
     });
-    var col = isExit ? C.det : C.beam;
+    var col = isExit ? (p.c ? COL[p.c] : C.det) : COL[p.c || 'R'];
+    if (isExit && p.c) el('line', { x1: cx + DX[side] * 0.07 - (horiz ? 0 : 0.3), y1: cy + DY[side] * 0.07 - (horiz ? 0.3 : 0), x2: cx + DX[side] * 0.07 + (horiz ? 0 : 0.3), y2: cy + DY[side] * 0.07 + (horiz ? 0.3 : 0), stroke: col, 'stroke-width': 0.09, 'stroke-linecap': 'round' }, board);
     var t = el('text', { x: cx + DX[side] * 0.58, y: cy + DY[side] * 0.58, 'text-anchor': 'middle', 'dominant-baseline': 'central',
-      'font-family': 'Saira Condensed, Arial Narrow, sans-serif', 'font-weight': 700, 'font-size': 0.44, fill: col, 'fill-opacity': isExit ? 0.55 : 1 }, board);
+      'font-family': 'Saira Condensed, Arial Narrow, sans-serif', 'font-weight': 700, 'font-size': 0.44, fill: col, 'fill-opacity': isExit ? (p.c ? 0.7 : 0.55) : 1 }, board);
     t.textContent = label;
     return t;
   }
   port(L.entry, (L.entry.d + 2) % 4, 'E', false);
   L.exits.forEach(function (s) { portEls.push(port(s, s.d, 'S', true)); });
   L.checks.forEach(function (c) {
-    el('circle', { cx: c[0] + 0.5, cy: c[1] + 0.5, r: 0.3, fill: 'none', stroke: C.det, 'stroke-opacity': 0.75, 'stroke-width': 0.035, 'stroke-dasharray': '0.09 0.07' }, board);
-    checkEls.push(el('circle', { cx: c[0] + 0.5, cy: c[1] + 0.5, r: 0.1, fill: C.det, 'fill-opacity': 0.3 }, board));
+    var cc = c[2] ? COL[c[2]] : C.det;
+    el('circle', { cx: c[0] + 0.5, cy: c[1] + 0.5, r: 0.3, fill: 'none', stroke: cc, 'stroke-opacity': 0.85, 'stroke-width': 0.035, 'stroke-dasharray': '0.09 0.07' }, board);
+    checkEls.push(el('circle', { cx: c[0] + 0.5, cy: c[1] + 0.5, r: 0.1, fill: cc, 'fill-opacity': 0.3 }, board));
   });
   gPieces = el('g', {}, board);
   gBeam = el('g', { 'pointer-events': 'none' }, board);
@@ -374,7 +403,7 @@ function renderStatus() {
   st.className = 'status' + (S.phase === 'won' || S.phase === 'done' ? ' won' : S.phase === 'lost' ? ' lost' : '');
   var title = '', text = '', label = '', dis = false; alt.hidden = true;
   var nc = L.checks.length;
-  var goal = 'Guidez le faisceau de E vers ' + (ex > 1 ? 'les ' + ex + ' sorties S' : 'la sortie S') + (nc ? ' en passant par ' + (nc > 1 ? 'les ' + nc + ' balises' : 'la balise') : '') + '.';
+  var goal = 'Guidez le faisceau de E vers ' + (ex > 1 ? 'les ' + ex + ' sorties S' : 'la sortie S') + (nc ? ' en passant par ' + (nc > 1 ? 'les ' + nc + ' balises' : 'la balise') : '') + '.' + (L.entry.c === 'W' ? ' Chaque couleur a sa sortie et ses balises.' : '');
   if (S.phase === 'ready') { title = 'Niveau ' + (S.lvl + 1); text = (news(S.lvl) ? news(S.lvl) + ' ' : '') + goal + ' Le chrono part à la première action.'; label = 'Démarrer'; }
   else if (S.phase === 'place') { title = 'Placez vos pièces'; text = goal + ' Le laser s\'allume à la fin du temps.'; label = 'Allumer le laser'; }
   else if (S.phase === 'fire') { title = 'Tir en cours'; text = ''; label = 'Tir en cours'; dis = true; }
@@ -419,8 +448,8 @@ function fire() {
   var gGlow = el('g', {}, gBeam), gCore = el('g', {}, gBeam);
   var lines = tr.segs.map(function (s) {
     var a = { x1: s.x1 + 0.5, y1: s.y1 + 0.5, x2: s.x1 + 0.5, y2: s.y1 + 0.5, 'stroke-linecap': 'round' };
-    var glow = el('line', Object.assign({ 'stroke-width': 0.18, stroke: '#3a0f18' }, a), gGlow);
-    var core = el('line', Object.assign({ 'stroke-width': 0.055, stroke: C.beam }, a), gCore);
+    var glow = el('line', Object.assign({ 'stroke-width': 0.18, stroke: GLOW[s.c] || GLOW.R }, a), gGlow);
+    var core = el('line', Object.assign({ 'stroke-width': 0.055, stroke: COL[s.c] || C.beam }, a), gCore);
     return { s: s, els: [glow, core] };
   });
   var maxStep = 0; tr.segs.forEach(function (s) { if (s.step > maxStep) maxStep = s.step; });
@@ -457,7 +486,9 @@ function finish(tr) {
     S.attempts++;
     var lit = tr.exits.length, ex = L.exits.length;
     var nc = L.checks.length, miss = [];
-    if (tr.fails.length) miss.push('Le faisceau a été arrêté par un obstacle.');
+    var wrong = tr.fails.filter(function (f) { return f.wrong; })[0];
+    if (wrong) miss.push('Le faisceau ' + COLNAME[wrong.c] + ' arrive à une sortie qui n\'est pas de sa couleur.');
+    else if (tr.fails.length) miss.push('Le faisceau a été arrêté par un obstacle.');
     else if (lit < ex) miss.push('Le faisceau tourne en rond sans atteindre toutes les sorties.');
     if (ex > 1 && lit < ex) miss.push('Sorties éclairées : ' + lit + ' sur ' + ex + '.');
     if (tr.checks.length < nc) miss.push('Balises traversées : ' + tr.checks.length + ' sur ' + nc + '.');
@@ -556,7 +587,7 @@ document.addEventListener('keydown', function (ev) {
   var tag = ev.target && ev.target.tagName;
   if (tag === 'SELECT' || tag === 'BUTTON' || tag === 'INPUT' || ev.ctrlKey || ev.metaKey || ev.altKey) return;
   if (ev.key === ' ' || ev.key === 'Enter') { ev.preventDefault(); if (!$('go').disabled) $('go').click(); }
-  else if (/^[1-6]$/.test(ev.key)) { var t = types()[+ev.key - 1]; if (t) { S.sel = t; renderTray(); } }
+  else if (/^[1-9]$/.test(ev.key)) { var t = types()[+ev.key - 1]; if (t) { S.sel = t; renderTray(); } }
 });
 // Installation (Android, PC) et indication pour iOS
 (function () {

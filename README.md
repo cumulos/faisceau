@@ -28,17 +28,23 @@ Après une modification, augmenter le numéro de `CACHE` dans `sw.js` pour que l
 | Séparateur | Laisse passer le faisceau et en renvoie une copie à 90° |
 | Diviseur en T | Coupe le faisceau en deux, à gauche et à droite |
 | Fibre optique | Deux extrémités : entrée par l'une, sortie par l'autre |
+| Diffracteur | Sépare la lumière blanche en rouge (à gauche), vert (tout droit) et bleu (à droite) |
+| Piège à lumière | Absorbe un faisceau sans faire échouer le tir |
+| Filtres rouge, vert, bleu | Laissent passer leur couleur, teintent le blanc, absorbent le reste |
 
-Les balises (cercles jaunes) doivent être traversées avant la sortie.
+Les balises (cercles en pointillés) doivent être traversées avant la sortie.
+
+À partir du niveau 31, la source est blanche. Chaque sortie colorée n'accepte que sa couleur, et une balise colorée doit être traversée par cette couleur.
 
 ## Niveaux
 
-30 niveaux, chacun avec une solution unique vérifiée par un solveur exhaustif.
+64 niveaux, chacun avec une solution unique vérifiée par un solveur exhaustif. Les niveaux 1 à 30 sont en lumière rouge, les niveaux 31 à 64 en couleur.
 
 ## Outils (`tools/`)
 
 - `engine.js` : moteur de tracé du faisceau et solveur
 - `gen.js` : générateur d'un niveau (`node gen.js <index> <graine> <budget ms>`, sortie dans `tools/lv/`)
-- `levels.json` : les 30 niveaux et leurs solutions
+- `gen-couleur.js` : générateur des niveaux en couleur, mêmes arguments, sortie dans `tools/lv/c<index>.json`
+- `levels.json` : les 64 niveaux et leurs solutions
 - `manifest.json`, `sw.js`, `icons/` (à la racine) : installation et cache hors ligne
 - `template.html` + `build.js` : assemblage de `index.html` (`node tools/build.js`)

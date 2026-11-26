@@ -167,7 +167,7 @@ h2 { font-family: var(--mono); font-weight: 400; font-size: 11px; letter-spacing
       <ul class="legend" id="legend"></ul>
     </div>
 
-    <p class="how">Choisissez une pièce puis touchez une case pour la poser. Touchez une pièce posée pour la pivoter, faites-la glisser pour la déplacer, sortez-la du plateau pour la reprendre. Un faisceau qui heurte un mur fait échouer le tir. Les balises (cercles jaunes) doivent être traversées avant la sortie, et rien ne se pose dessus.<span class="kbd"> Au clavier : Espace lance l'action, les chiffres choisissent une pièce, le clic droit en retire une.</span></p>
+    <p class="how">Choisissez une pièce puis touchez une case pour la poser. Touchez une pièce posée pour la pivoter, faites-la glisser pour la déplacer, sortez-la du plateau pour la reprendre. Un faisceau qui heurte un mur fait échouer le tir. Les balises (cercles en pointillés) doivent être traversées avant la sortie, et rien ne se pose dessus.<span class="kbd"> Au clavier : Espace lance l'action, les chiffres choisissent une pièce, le clic droit en retire une.</span></p>
     <div class="install" id="install" hidden>
       <button class="alt" id="installBtn" type="button" hidden>Installer l'application</button>
       <p class="how" id="iosHint" hidden>Pour installer sur iPhone ou iPad : dans Safari, touchez Partager puis « Sur l'écran d'accueil ».</p>
@@ -177,15 +177,23 @@ h2 { font-family: var(--mono); font-weight: 400; font-size: 11px; letter-spacing
 
 <script>
 // Moteur partagé (jeu + générateur). Directions: 0=E 1=S 2=O 3=N, y vers le bas.
-// Pièces: M miroir, U miroir sans tain, P prisme, S séparateur, T diviseur en T, F fibre (paire).
+// Pièces: M miroir, U miroir sans tain, P prisme, S séparateur, T diviseur en T, F fibre (paire),
+// D diffracteur (blanc -> rouge à gauche, vert tout droit, bleu à droite), X piège à lumière, r g b filtres.
+// Couleurs de faisceau: W blanc, R rouge, G vert, B bleu. Source rouge par défaut.
 var DX = [1, 0, -1, 0], DY = [0, 1, 0, -1];
 var REFL = [[3, 2, 1, 0], [1, 0, 3, 2]]; // diagonale 0 = "/", 1 = "\"
-var NOR = { M: 2, U: 4, P: 2, S: 2, T: 1, F: 1 };
+var NOR = { M: 2, U: 4, P: 2, S: 2, T: 1, F: 1, D: 1, X: 1, r: 1, g: 1, b: 1 };
+var FILT = { r: 'R', g: 'G', b: 'B' };
 function K(x, y) { return x + ',' + y; }
 
 // Une étape: faisceau entrant en (x,y) direction d sur la pièce p (ou rien).
-// Retourne null si absorbé, sinon liste de sorties [sx, sy, nx, ny, nd, diag]
-function stepBeam(placed, x, y, d, p) {
+// Retourne null si arrêté (échec), [] si absorbé sans échec, sinon [sx, sy, nx, ny, nd, diag, couleur]
+function stepBeam(placed, x, y, d, p, c) {
+  var outs = stepGeom(placed, x, y, d, p, c);
+  if (outs) for (var i = 0; i < outs.length; i++) if (outs[i].length < 7) outs[i].push(c);
+  return outs;
+}
+function stepGeom(placed, x, y, d, p, c) {
   if (!p) return [[x, y, x + DX[d], y + DY[d], d, 0]];
   var diag = p.o & 1, r = REFL[diag][d];
   if (p.t === 'M') return [[x, y, x + DX[r], y + DY[r], r, 0]];
@@ -204,61 +212,78 @@ function stepBeam(placed, x, y, d, p) {
     var q = other.split(','), ox = +q[0], oy = +q[1];
     return [[ox, oy, ox + DX[d], oy + DY[d], d, 0]];
   }
+  if (p.t === 'D') {
+    if (c !== 'W') return [[x, y, x + DX[d], y + DY[d], d, 0]];
+    var l = (d + 3) % 4, rr = (d + 1) % 4;
+    return [[x, y, x + DX[l], y + DY[l], l, 0, 'R'], [x, y, x + DX[d], y + DY[d], d, 0, 'G'], [x, y, x + DX[rr], y + DY[rr], rr, 0, 'B']];
+  }
+  if (p.t === 'X') return [];
+  if (FILT[p.t]) {
+    if (c !== 'W' && c !== FILT[p.t]) return [];
+    return [[x, y, x + DX[d], y + DY[d], d, 0, FILT[p.t]]];
+  }
   return null;
 }
-function exitIndex(level, x, y, d) {
-  for (var j = 0; j < level.exits.length; j++) { var s = level.exits[j]; if (s.x === x && s.y === y && s.d === d) return j; }
+function exitIndex(level, x, y, d, c) {
+  for (var j = 0; j < level.exits.length; j++) {
+    var s = level.exits[j];
+    if (s.x === x && s.y === y && s.d === d) return (!s.c || s.c === c) ? j : -2;
+  }
   return -1;
+}
+function checksDone(level, cells, cellsC) {
+  var checks = level.checks || [], hit = [];
+  checks.forEach(function (q, i) { if (q[2] ? cellsC[K(q[0], q[1]) + q[2]] : cells[K(q[0], q[1])]) hit.push(i); });
+  return hit;
 }
 
 // Trace complète pour l'affichage et le verdict.
 function trace(level, placed) {
   var walls = {}; level.walls.forEach(function (w) { walls[K(w[0], w[1])] = 1; });
-  var segs = [], fails = [], exitsHit = {}, hit = {}, cells = {}, seen = {};
+  var segs = [], fails = [], exitsHit = {}, hit = {}, cells = {}, cellsC = {}, seen = {};
   var e = level.entry;
-  var heads = [{ x: e.x, y: e.y, d: e.d, fx: e.x - DX[e.d] * 0.5, fy: e.y - DY[e.d] * 0.5, step: 0 }];
+  var heads = [{ x: e.x, y: e.y, d: e.d, c: e.c || 'R', fx: e.x - DX[e.d] * 0.5, fy: e.y - DY[e.d] * 0.5, step: 0 }];
   var guard = 0;
   while (heads.length && guard++ < 5000) {
-    var h = heads.shift(), x = h.x, y = h.y, d = h.d;
+    var h = heads.shift(), x = h.x, y = h.y, d = h.d, c = h.c;
     if (x < 0 || y < 0 || x >= level.w || y >= level.h) { // diagonale hors grille
-      segs.push({ x1: h.fx, y1: h.fy, x2: (h.fx + x) / 2, y2: (h.fy + y) / 2, step: h.step });
-      fails.push({ x: (h.fx + x) / 2, y: (h.fy + y) / 2 });
+      segs.push({ x1: h.fx, y1: h.fy, x2: (h.fx + x) / 2, y2: (h.fy + y) / 2, step: h.step, c: c });
+      fails.push({ x: (h.fx + x) / 2, y: (h.fy + y) / 2, c: c });
       continue;
     }
     if (walls[K(x, y)]) {
       var mx = (h.fx + x) / 2, my = (h.fy + y) / 2;
       if (Math.abs(x - h.fx) + Math.abs(y - h.fy) < 1.01) { mx = x - DX[d] * 0.5; my = y - DY[d] * 0.5; }
-      segs.push({ x1: h.fx, y1: h.fy, x2: mx, y2: my, step: h.step });
-      fails.push({ x: mx, y: my });
+      segs.push({ x1: h.fx, y1: h.fy, x2: mx, y2: my, step: h.step, c: c });
+      fails.push({ x: mx, y: my, c: c });
       continue;
     }
-    segs.push({ x1: h.fx, y1: h.fy, x2: x, y2: y, step: h.step });
-    var sk = K(x, y) + ',' + d;
+    segs.push({ x1: h.fx, y1: h.fy, x2: x, y2: y, step: h.step, c: c });
+    var sk = K(x, y) + ',' + d + c;
     if (seen[sk]) continue;
-    seen[sk] = 1; cells[K(x, y)] = 1;
+    seen[sk] = 1; cells[K(x, y)] = 1; cellsC[K(x, y) + c] = 1;
     var p = placed[K(x, y)];
     if (p) hit[K(x, y)] = 1;
-    var outs = stepBeam(placed, x, y, d, p);
-    if (!outs) { fails.push({ x: x, y: y }); continue; }
+    var outs = stepBeam(placed, x, y, d, p, c);
+    if (!outs) { fails.push({ x: x, y: y, c: c }); continue; }
     for (var i = 0; i < outs.length; i++) {
-      var o = outs[i], sx = o[0], sy = o[1], nx = o[2], ny = o[3], nd = o[4];
-      if (sx !== x || sy !== y) { cells[K(sx, sy)] = 1; hit[K(sx, sy)] = 1; }
+      var o = outs[i], sx = o[0], sy = o[1], nx = o[2], ny = o[3], nd = o[4], oc = o[6];
+      if (sx !== x || sy !== y) { cells[K(sx, sy)] = 1; cellsC[K(sx, sy) + oc] = 1; hit[K(sx, sy)] = 1; }
       if (!o[5] && (nx < 0 || ny < 0 || nx >= level.w || ny >= level.h)) {
-        var ex = exitIndex(level, sx, sy, nd);
-        if (ex >= 0) { exitsHit[ex] = 1; segs.push({ x1: sx, y1: sy, x2: sx + DX[nd] * 0.95, y2: sy + DY[nd] * 0.95, step: h.step + 1 }); }
-        else { segs.push({ x1: sx, y1: sy, x2: sx + DX[nd] * 0.5, y2: sy + DY[nd] * 0.5, step: h.step + 1 }); fails.push({ x: sx + DX[nd] * 0.5, y: sy + DY[nd] * 0.5 }); }
-      } else heads.push({ x: nx, y: ny, d: nd, fx: sx, fy: sy, step: h.step + 1 });
+        var ex = exitIndex(level, sx, sy, nd, oc);
+        if (ex >= 0) { exitsHit[ex] = 1; segs.push({ x1: sx, y1: sy, x2: sx + DX[nd] * 0.95, y2: sy + DY[nd] * 0.95, step: h.step + 1, c: oc }); }
+        else { segs.push({ x1: sx, y1: sy, x2: sx + DX[nd] * 0.5, y2: sy + DY[nd] * 0.5, step: h.step + 1, c: oc }); fails.push({ x: sx + DX[nd] * 0.5, y: sy + DY[nd] * 0.5, c: oc, d: nd, wrong: ex === -2 }); }
+      } else heads.push({ x: nx, y: ny, d: nd, c: oc, fx: sx, fy: sy, step: h.step + 1 });
     }
   }
-  var checks = level.checks || [], checksHit = [];
-  checks.forEach(function (c, i) { if (cells[K(c[0], c[1])]) checksHit.push(i); });
+  var checks = level.checks || [], checksHit = checksDone(level, cells, cellsC);
   var exits = Object.keys(exitsHit).map(Number);
-  return { segs: segs, fails: fails, exits: exits, checks: checksHit, hit: hit, cells: cells,
+  return { segs: segs, fails: fails, exits: exits, checks: checksHit, hit: hit, cells: cells, cellsC: cellsC,
     ok: fails.length === 0 && exits.length === level.exits.length && checksHit.length === checks.length };
 }
 
 
-var LEVELS = [{"w":6,"h":6,"walls":[[0,5]],"checks":[],"entry":{"x":4,"y":5,"d":3},"exits":[{"x":0,"y":1,"d":2}],"pieces":["M"],"time":24,"solution":{"4,1":{"t":"M","o":1}}},{"w":6,"h":6,"walls":[[4,2],[1,3],[2,3],[0,4],[3,2],[2,2]],"checks":[],"entry":{"x":0,"y":1,"d":0},"exits":[{"x":0,"y":5,"d":2}],"pieces":["M","M"],"time":33,"solution":{"5,1":{"t":"M","o":1},"5,5":{"t":"M","o":0}}},{"w":6,"h":6,"walls":[[4,1]],"checks":[[4,0]],"entry":{"x":0,"y":3,"d":0},"exits":[{"x":0,"y":0,"d":2}],"pieces":["M","M"],"time":38,"solution":{"5,3":{"t":"M","o":0},"5,0":{"t":"M","o":1}}},{"w":7,"h":7,"walls":[[2,0],[5,0],[3,0]],"checks":[],"entry":{"x":1,"y":6,"d":3},"exits":[{"x":6,"y":0,"d":0}],"pieces":["M","P"],"time":33,"solution":{"1,1":{"t":"M","o":0},"5,1":{"t":"P","o":0}}},{"w":7,"h":7,"walls":[[5,4],[6,3],[1,6],[6,1]],"checks":[],"entry":{"x":1,"y":0,"d":1},"exits":[{"x":6,"y":4,"d":0}],"pieces":["M","M","M"],"time":42,"solution":{"1,5":{"t":"M","o":1},"6,5":{"t":"M","o":0},"6,4":{"t":"M","o":0}}},{"w":7,"h":7,"walls":[[2,6],[6,3],[1,5],[6,0]],"checks":[[4,5]],"entry":{"x":0,"y":1,"d":0},"exits":[{"x":0,"y":6,"d":2}],"pieces":["M","M","P"],"time":47,"solution":{"5,1":{"t":"M","o":1},"5,5":{"t":"M","o":0},"2,5":{"t":"P","o":0}}},{"w":7,"h":7,"walls":[[3,2],[1,6],[2,0]],"checks":[],"entry":{"x":0,"y":2,"d":0},"exits":[{"x":6,"y":6,"d":0}],"pieces":["U","U"],"time":33,"solution":{"2,2":{"t":"U","o":1},"2,6":{"t":"U","o":3}}},{"w":7,"h":7,"walls":[[0,1],[2,2],[1,1],[1,4]],"checks":[[0,5]],"entry":{"x":6,"y":1,"d":2},"exits":[{"x":0,"y":6,"d":2}],"pieces":["U","U","P"],"time":47,"solution":{"2,1":{"t":"P","o":0},"0,2":{"t":"U","o":2},"0,6":{"t":"U","o":0}}},{"w":7,"h":7,"walls":[[5,5]],"checks":[],"entry":{"x":0,"y":4,"d":0},"exits":[{"x":3,"y":6,"d":1},{"x":6,"y":0,"d":3}],"pieces":["S","M"],"time":33,"solution":{"6,4":{"t":"M","o":0},"3,4":{"t":"S","o":1}}},{"w":7,"h":7,"walls":[[5,4]],"checks":[[5,3]],"entry":{"x":3,"y":6,"d":3},"exits":[{"x":0,"y":1,"d":2},{"x":6,"y":6,"d":1}],"pieces":["S","M","M"],"time":47,"solution":{"3,3":{"t":"S","o":0},"6,3":{"t":"M","o":1},"3,1":{"t":"M","o":1}}},{"w":7,"h":7,"walls":[[0,3]],"checks":[],"entry":{"x":6,"y":2,"d":2},"exits":[{"x":4,"y":0,"d":3},{"x":0,"y":6,"d":2}],"pieces":["T","M"],"time":33,"solution":{"4,2":{"t":"T","o":0},"4,6":{"t":"M","o":0}}},{"w":8,"h":8,"walls":[[5,2],[7,1],[3,3]],"checks":[[1,6]],"entry":{"x":7,"y":2,"d":2},"exits":[{"x":0,"y":0,"d":2},{"x":0,"y":6,"d":2}],"pieces":["T","M","M"],"time":47,"solution":{"6,2":{"t":"T","o":0},"6,0":{"t":"M","o":1},"6,6":{"t":"M","o":0}}},{"w":7,"h":7,"walls":[[2,4],[1,5],[2,2]],"checks":[[3,6]],"entry":{"x":6,"y":3,"d":2},"exits":[{"x":5,"y":0,"d":3}],"pieces":["F","F","M"],"time":47,"solution":{"0,3":{"t":"F","o":0},"5,6":{"t":"F","o":0},"0,6":{"t":"M","o":1}}},{"w":8,"h":8,"walls":[[3,1],[2,7],[6,5],[3,4],[5,3],[1,6],[3,6],[7,1]],"checks":[[2,4],[4,5]],"entry":{"x":0,"y":1,"d":0},"exits":[{"x":0,"y":5,"d":2}],"pieces":["F","F","M","M"],"time":61,"solution":{"2,1":{"t":"M","o":1},"2,6":{"t":"F","o":0},"5,4":{"t":"F","o":0},"5,5":{"t":"M","o":0}}},{"w":8,"h":8,"walls":[[3,6],[5,5],[6,4],[7,3],[4,6],[0,7]],"checks":[[5,6]],"entry":{"x":3,"y":0,"d":1},"exits":[{"x":6,"y":0,"d":3}],"pieces":["M","M","P","P"],"time":56,"solution":{"3,5":{"t":"M","o":1},"4,5":{"t":"P","o":1},"7,6":{"t":"M","o":0},"7,4":{"t":"P","o":1}}},{"w":8,"h":8,"walls":[[1,5],[1,3],[2,2],[5,6]],"checks":[[4,5]],"entry":{"x":1,"y":0,"d":1},"exits":[{"x":7,"y":5,"d":0},{"x":7,"y":7,"d":0}],"pieces":["S","M","P"],"time":47,"solution":{"1,2":{"t":"P","o":1},"2,7":{"t":"M","o":1},"2,5":{"t":"S","o":1}}},{"w":8,"h":8,"walls":[[2,5],[0,6],[2,6]],"checks":[[4,7]],"entry":{"x":0,"y":5,"d":0},"exits":[{"x":6,"y":0,"d":3}],"pieces":["U","U","U"],"time":47,"solution":{"1,5":{"t":"U","o":1},"1,7":{"t":"U","o":3},"6,7":{"t":"U","o":0}}},{"w":8,"h":8,"walls":[[1,5],[3,7],[0,7]],"checks":[[1,2],[0,4]],"entry":{"x":4,"y":7,"d":3},"exits":[{"x":4,"y":0,"d":3}],"pieces":["M","M","M","M"],"time":61,"solution":{"4,6":{"t":"M","o":1},"0,6":{"t":"M","o":1},"0,2":{"t":"M","o":0},"4,2":{"t":"M","o":0}}},{"w":8,"h":8,"walls":[[1,6],[6,2],[5,1]],"checks":[[3,6]],"entry":{"x":7,"y":6,"d":2},"exits":[{"x":0,"y":3,"d":2},{"x":7,"y":2,"d":0}],"pieces":["T","M","P"],"time":47,"solution":{"2,6":{"t":"M","o":1},"2,3":{"t":"T","o":0},"6,3":{"t":"P","o":0}}},{"w":8,"h":8,"walls":[[1,4]],"checks":[[4,4]],"entry":{"x":0,"y":5,"d":0},"exits":[{"x":6,"y":7,"d":1},{"x":0,"y":0,"d":2}],"pieces":["S","U","U"],"time":47,"solution":{"4,5":{"t":"S","o":0},"6,5":{"t":"U","o":1},"4,0":{"t":"U","o":1}}},{"w":8,"h":8,"walls":[[3,1],[1,6],[7,6],[4,0],[4,4]],"checks":[[1,4],[2,0]],"entry":{"x":7,"y":1,"d":2},"exits":[{"x":7,"y":7,"d":1}],"pieces":["F","F","M","P"],"time":61,"solution":{"4,1":{"t":"P","o":1},"1,0":{"t":"M","o":0},"1,5":{"t":"F","o":0},"7,7":{"t":"F","o":0}}},{"w":8,"h":8,"walls":[[7,4],[2,1],[3,0],[7,6]],"checks":[[3,5]],"entry":{"x":1,"y":0,"d":1},"exits":[{"x":0,"y":3,"d":2},{"x":7,"y":0,"d":3},{"x":7,"y":5,"d":0}],"pieces":["S","S","M","M"],"time":56,"solution":{"1,2":{"t":"S","o":1},"1,3":{"t":"S","o":0},"1,5":{"t":"M","o":1},"7,2":{"t":"M","o":0}}},{"w":8,"h":8,"walls":[[3,2],[1,6],[0,2]],"checks":[[3,4],[1,4]],"entry":{"x":7,"y":3,"d":2},"exits":[{"x":1,"y":7,"d":1},{"x":3,"y":7,"d":1}],"pieces":["F","F","S","M"],"time":61,"solution":{"1,3":{"t":"M","o":0},"3,3":{"t":"S","o":0},"1,7":{"t":"F","o":0},"1,5":{"t":"F","o":0}}},{"w":9,"h":9,"walls":[[8,4],[7,3],[1,7],[3,5]],"checks":[[7,2],[4,2]],"entry":{"x":8,"y":7,"d":2},"exits":[{"x":2,"y":0,"d":3},{"x":2,"y":8,"d":1}],"pieces":["T","M","M","P"],"time":61,"solution":{"7,7":{"t":"M","o":1},"7,4":{"t":"P","o":0},"8,2":{"t":"M","o":1},"2,2":{"t":"T","o":0}}},{"w":9,"h":9,"walls":[[6,3],[4,4],[7,5],[7,7],[6,8],[2,8],[0,1]],"checks":[[6,6],[6,5]],"entry":{"x":0,"y":5,"d":0},"exits":[{"x":7,"y":8,"d":1}],"pieces":["U","U","U","P"],"time":61,"solution":{"5,5":{"t":"U","o":0},"5,4":{"t":"U","o":2},"6,4":{"t":"U","o":1},"6,7":{"t":"P","o":1}}},{"w":9,"h":9,"walls":[[5,6],[6,8],[0,8],[5,2]],"checks":[[3,1]],"entry":{"x":5,"y":8,"d":3},"exits":[{"x":8,"y":8,"d":1},{"x":0,"y":3,"d":2},{"x":0,"y":1,"d":2}],"pieces":["S","T","M","M"],"time":56,"solution":{"5,7":{"t":"M","o":0},"8,7":{"t":"T","o":0},"8,1":{"t":"M","o":1},"8,3":{"t":"S","o":1}}},{"w":9,"h":9,"walls":[[3,4],[4,0],[1,1],[6,2],[5,0],[2,2],[2,6],[5,5]],"checks":[[7,0],[1,3]],"entry":{"x":0,"y":4,"d":0},"exits":[{"x":1,"y":8,"d":1},{"x":8,"y":0,"d":0}],"pieces":["F","F","T","M"],"time":61,"solution":{"1,4":{"t":"T","o":0},"1,2":{"t":"F","o":0},"6,1":{"t":"F","o":0},"6,0":{"t":"M","o":0}}},{"w":9,"h":9,"walls":[[1,1],[2,7],[4,1],[4,4]],"checks":[[2,6],[2,0]],"entry":{"x":1,"y":8,"d":3},"exits":[{"x":0,"y":4,"d":2},{"x":8,"y":0,"d":0}],"pieces":["S","M","P","P"],"time":61,"solution":{"1,0":{"t":"M","o":0},"1,7":{"t":"P","o":0},"2,1":{"t":"P","o":1},"2,4":{"t":"S","o":1}}},{"w":9,"h":9,"walls":[[1,4],[3,6],[3,0]],"checks":[[2,7],[4,4]],"entry":{"x":8,"y":4,"d":2},"exits":[{"x":0,"y":5,"d":2},{"x":0,"y":0,"d":3},{"x":8,"y":8,"d":0}],"pieces":["S","S","M","P"],"time":61,"solution":{"3,4":{"t":"P","o":0},"2,5":{"t":"S","o":0},"0,5":{"t":"S","o":1},"2,8":{"t":"M","o":1}}},{"w":9,"h":9,"walls":[[4,2],[6,7],[3,1]],"checks":[[8,7],[7,5]],"entry":{"x":7,"y":0,"d":1},"exits":[{"x":2,"y":8,"d":1},{"x":2,"y":0,"d":3},{"x":0,"y":2,"d":2}],"pieces":["S","T","M","P"],"time":61,"solution":{"7,6":{"t":"P","o":1},"8,8":{"t":"M","o":0},"2,8":{"t":"T","o":0},"2,2":{"t":"S","o":1}}}];
+var LEVELS = [{"w":6,"h":6,"walls":[[0,5]],"checks":[],"entry":{"x":4,"y":5,"d":3},"exits":[{"x":0,"y":1,"d":2}],"pieces":["M"],"time":24,"solution":{"4,1":{"t":"M","o":1}}},{"w":6,"h":6,"walls":[[4,2],[1,3],[2,3],[0,4],[3,2],[2,2]],"checks":[],"entry":{"x":0,"y":1,"d":0},"exits":[{"x":0,"y":5,"d":2}],"pieces":["M","M"],"time":33,"solution":{"5,1":{"t":"M","o":1},"5,5":{"t":"M","o":0}}},{"w":6,"h":6,"walls":[[4,1]],"checks":[[4,0]],"entry":{"x":0,"y":3,"d":0},"exits":[{"x":0,"y":0,"d":2}],"pieces":["M","M"],"time":38,"solution":{"5,3":{"t":"M","o":0},"5,0":{"t":"M","o":1}}},{"w":7,"h":7,"walls":[[2,0],[5,0],[3,0]],"checks":[],"entry":{"x":1,"y":6,"d":3},"exits":[{"x":6,"y":0,"d":0}],"pieces":["M","P"],"time":33,"solution":{"1,1":{"t":"M","o":0},"5,1":{"t":"P","o":0}}},{"w":7,"h":7,"walls":[[5,4],[6,3],[1,6],[6,1]],"checks":[],"entry":{"x":1,"y":0,"d":1},"exits":[{"x":6,"y":4,"d":0}],"pieces":["M","M","M"],"time":42,"solution":{"1,5":{"t":"M","o":1},"6,5":{"t":"M","o":0},"6,4":{"t":"M","o":0}}},{"w":7,"h":7,"walls":[[2,6],[6,3],[1,5],[6,0]],"checks":[[4,5]],"entry":{"x":0,"y":1,"d":0},"exits":[{"x":0,"y":6,"d":2}],"pieces":["M","M","P"],"time":47,"solution":{"5,1":{"t":"M","o":1},"5,5":{"t":"M","o":0},"2,5":{"t":"P","o":0}}},{"w":7,"h":7,"walls":[[3,2],[1,6],[2,0]],"checks":[],"entry":{"x":0,"y":2,"d":0},"exits":[{"x":6,"y":6,"d":0}],"pieces":["U","U"],"time":33,"solution":{"2,2":{"t":"U","o":1},"2,6":{"t":"U","o":3}}},{"w":7,"h":7,"walls":[[0,1],[2,2],[1,1],[1,4]],"checks":[[0,5]],"entry":{"x":6,"y":1,"d":2},"exits":[{"x":0,"y":6,"d":2}],"pieces":["U","U","P"],"time":47,"solution":{"2,1":{"t":"P","o":0},"0,2":{"t":"U","o":2},"0,6":{"t":"U","o":0}}},{"w":7,"h":7,"walls":[[5,5]],"checks":[],"entry":{"x":0,"y":4,"d":0},"exits":[{"x":3,"y":6,"d":1},{"x":6,"y":0,"d":3}],"pieces":["S","M"],"time":33,"solution":{"6,4":{"t":"M","o":0},"3,4":{"t":"S","o":1}}},{"w":7,"h":7,"walls":[[5,4]],"checks":[[5,3]],"entry":{"x":3,"y":6,"d":3},"exits":[{"x":0,"y":1,"d":2},{"x":6,"y":6,"d":1}],"pieces":["S","M","M"],"time":47,"solution":{"3,3":{"t":"S","o":0},"6,3":{"t":"M","o":1},"3,1":{"t":"M","o":1}}},{"w":7,"h":7,"walls":[[0,3]],"checks":[],"entry":{"x":6,"y":2,"d":2},"exits":[{"x":4,"y":0,"d":3},{"x":0,"y":6,"d":2}],"pieces":["T","M"],"time":33,"solution":{"4,2":{"t":"T","o":0},"4,6":{"t":"M","o":0}}},{"w":8,"h":8,"walls":[[5,2],[7,1],[3,3]],"checks":[[1,6]],"entry":{"x":7,"y":2,"d":2},"exits":[{"x":0,"y":0,"d":2},{"x":0,"y":6,"d":2}],"pieces":["T","M","M"],"time":47,"solution":{"6,2":{"t":"T","o":0},"6,0":{"t":"M","o":1},"6,6":{"t":"M","o":0}}},{"w":7,"h":7,"walls":[[2,4],[1,5],[2,2]],"checks":[[3,6]],"entry":{"x":6,"y":3,"d":2},"exits":[{"x":5,"y":0,"d":3}],"pieces":["F","F","M"],"time":47,"solution":{"0,3":{"t":"F","o":0},"5,6":{"t":"F","o":0},"0,6":{"t":"M","o":1}}},{"w":8,"h":8,"walls":[[3,1],[2,7],[6,5],[3,4],[5,3],[1,6],[3,6],[7,1]],"checks":[[2,4],[4,5]],"entry":{"x":0,"y":1,"d":0},"exits":[{"x":0,"y":5,"d":2}],"pieces":["F","F","M","M"],"time":61,"solution":{"2,1":{"t":"M","o":1},"2,6":{"t":"F","o":0},"5,4":{"t":"F","o":0},"5,5":{"t":"M","o":0}}},{"w":8,"h":8,"walls":[[3,6],[5,5],[6,4],[7,3],[4,6],[0,7]],"checks":[[5,6]],"entry":{"x":3,"y":0,"d":1},"exits":[{"x":6,"y":0,"d":3}],"pieces":["M","M","P","P"],"time":56,"solution":{"3,5":{"t":"M","o":1},"4,5":{"t":"P","o":1},"7,6":{"t":"M","o":0},"7,4":{"t":"P","o":1}}},{"w":8,"h":8,"walls":[[1,5],[1,3],[2,2],[5,6]],"checks":[[4,5]],"entry":{"x":1,"y":0,"d":1},"exits":[{"x":7,"y":5,"d":0},{"x":7,"y":7,"d":0}],"pieces":["S","M","P"],"time":47,"solution":{"1,2":{"t":"P","o":1},"2,7":{"t":"M","o":1},"2,5":{"t":"S","o":1}}},{"w":8,"h":8,"walls":[[2,5],[0,6],[2,6]],"checks":[[4,7]],"entry":{"x":0,"y":5,"d":0},"exits":[{"x":6,"y":0,"d":3}],"pieces":["U","U","U"],"time":47,"solution":{"1,5":{"t":"U","o":1},"1,7":{"t":"U","o":3},"6,7":{"t":"U","o":0}}},{"w":8,"h":8,"walls":[[1,5],[3,7],[0,7]],"checks":[[1,2],[0,4]],"entry":{"x":4,"y":7,"d":3},"exits":[{"x":4,"y":0,"d":3}],"pieces":["M","M","M","M"],"time":61,"solution":{"4,6":{"t":"M","o":1},"0,6":{"t":"M","o":1},"0,2":{"t":"M","o":0},"4,2":{"t":"M","o":0}}},{"w":8,"h":8,"walls":[[1,6],[6,2],[5,1]],"checks":[[3,6]],"entry":{"x":7,"y":6,"d":2},"exits":[{"x":0,"y":3,"d":2},{"x":7,"y":2,"d":0}],"pieces":["T","M","P"],"time":47,"solution":{"2,6":{"t":"M","o":1},"2,3":{"t":"T","o":0},"6,3":{"t":"P","o":0}}},{"w":8,"h":8,"walls":[[1,4]],"checks":[[4,4]],"entry":{"x":0,"y":5,"d":0},"exits":[{"x":6,"y":7,"d":1},{"x":0,"y":0,"d":2}],"pieces":["S","U","U"],"time":47,"solution":{"4,5":{"t":"S","o":0},"6,5":{"t":"U","o":1},"4,0":{"t":"U","o":1}}},{"w":8,"h":8,"walls":[[3,1],[1,6],[7,6],[4,0],[4,4]],"checks":[[1,4],[2,0]],"entry":{"x":7,"y":1,"d":2},"exits":[{"x":7,"y":7,"d":1}],"pieces":["F","F","M","P"],"time":61,"solution":{"4,1":{"t":"P","o":1},"1,0":{"t":"M","o":0},"1,5":{"t":"F","o":0},"7,7":{"t":"F","o":0}}},{"w":8,"h":8,"walls":[[7,4],[2,1],[3,0],[7,6]],"checks":[[3,5]],"entry":{"x":1,"y":0,"d":1},"exits":[{"x":0,"y":3,"d":2},{"x":7,"y":0,"d":3},{"x":7,"y":5,"d":0}],"pieces":["S","S","M","M"],"time":56,"solution":{"1,2":{"t":"S","o":1},"1,3":{"t":"S","o":0},"1,5":{"t":"M","o":1},"7,2":{"t":"M","o":0}}},{"w":8,"h":8,"walls":[[3,2],[1,6],[0,2]],"checks":[[3,4],[1,4]],"entry":{"x":7,"y":3,"d":2},"exits":[{"x":1,"y":7,"d":1},{"x":3,"y":7,"d":1}],"pieces":["F","F","S","M"],"time":61,"solution":{"1,3":{"t":"M","o":0},"3,3":{"t":"S","o":0},"1,7":{"t":"F","o":0},"1,5":{"t":"F","o":0}}},{"w":9,"h":9,"walls":[[8,4],[7,3],[1,7],[3,5]],"checks":[[7,2],[4,2]],"entry":{"x":8,"y":7,"d":2},"exits":[{"x":2,"y":0,"d":3},{"x":2,"y":8,"d":1}],"pieces":["T","M","M","P"],"time":61,"solution":{"7,7":{"t":"M","o":1},"7,4":{"t":"P","o":0},"8,2":{"t":"M","o":1},"2,2":{"t":"T","o":0}}},{"w":9,"h":9,"walls":[[6,3],[4,4],[7,5],[7,7],[6,8],[2,8],[0,1]],"checks":[[6,6],[6,5]],"entry":{"x":0,"y":5,"d":0},"exits":[{"x":7,"y":8,"d":1}],"pieces":["U","U","U","P"],"time":61,"solution":{"5,5":{"t":"U","o":0},"5,4":{"t":"U","o":2},"6,4":{"t":"U","o":1},"6,7":{"t":"P","o":1}}},{"w":9,"h":9,"walls":[[5,6],[6,8],[0,8],[5,2]],"checks":[[3,1]],"entry":{"x":5,"y":8,"d":3},"exits":[{"x":8,"y":8,"d":1},{"x":0,"y":3,"d":2},{"x":0,"y":1,"d":2}],"pieces":["S","T","M","M"],"time":56,"solution":{"5,7":{"t":"M","o":0},"8,7":{"t":"T","o":0},"8,1":{"t":"M","o":1},"8,3":{"t":"S","o":1}}},{"w":9,"h":9,"walls":[[3,4],[4,0],[1,1],[6,2],[5,0],[2,2],[2,6],[5,5]],"checks":[[7,0],[1,3]],"entry":{"x":0,"y":4,"d":0},"exits":[{"x":1,"y":8,"d":1},{"x":8,"y":0,"d":0}],"pieces":["F","F","T","M"],"time":61,"solution":{"1,4":{"t":"T","o":0},"1,2":{"t":"F","o":0},"6,1":{"t":"F","o":0},"6,0":{"t":"M","o":0}}},{"w":9,"h":9,"walls":[[1,1],[2,7],[4,1],[4,4]],"checks":[[2,6],[2,0]],"entry":{"x":1,"y":8,"d":3},"exits":[{"x":0,"y":4,"d":2},{"x":8,"y":0,"d":0}],"pieces":["S","M","P","P"],"time":61,"solution":{"1,0":{"t":"M","o":0},"1,7":{"t":"P","o":0},"2,1":{"t":"P","o":1},"2,4":{"t":"S","o":1}}},{"w":9,"h":9,"walls":[[1,4],[3,6],[3,0]],"checks":[[2,7],[4,4]],"entry":{"x":8,"y":4,"d":2},"exits":[{"x":0,"y":5,"d":2},{"x":0,"y":0,"d":3},{"x":8,"y":8,"d":0}],"pieces":["S","S","M","P"],"time":61,"solution":{"3,4":{"t":"P","o":0},"2,5":{"t":"S","o":0},"0,5":{"t":"S","o":1},"2,8":{"t":"M","o":1}}},{"w":9,"h":9,"walls":[[4,2],[6,7],[3,1]],"checks":[[8,7],[7,5]],"entry":{"x":7,"y":0,"d":1},"exits":[{"x":2,"y":8,"d":1},{"x":2,"y":0,"d":3},{"x":0,"y":2,"d":2}],"pieces":["S","T","M","P"],"time":61,"solution":{"7,6":{"t":"P","o":1},"8,8":{"t":"M","o":0},"2,8":{"t":"T","o":0},"2,2":{"t":"S","o":1}}},{"w":7,"h":7,"walls":[[4,6]],"checks":[],"entry":{"x":1,"y":0,"d":1,"c":"W"},"exits":[{"x":0,"y":3,"d":2,"c":"B"},{"x":1,"y":6,"d":1,"c":"G"},{"x":6,"y":3,"d":0,"c":"R"}],"pieces":["D"],"time":29,"solution":{"1,3":{"t":"D","o":0}}},{"w":7,"h":7,"walls":[[1,0]],"checks":[],"entry":{"x":5,"y":6,"d":3,"c":"W"},"exits":[{"x":0,"y":5,"d":2,"c":"R"},{"x":5,"y":0,"d":3,"c":"G"},{"x":6,"y":0,"d":3,"c":"B"}],"pieces":["D","M"],"time":38,"solution":{"5,5":{"t":"D","o":0},"6,5":{"t":"M","o":0}}},{"w":7,"h":7,"walls":[[3,5]],"checks":[],"entry":{"x":6,"y":2,"d":2,"c":"W"},"exits":[{"x":4,"y":6,"d":1,"c":"R"},{"x":0,"y":0,"d":2,"c":"B"},{"x":1,"y":6,"d":1,"c":"G"}],"pieces":["D","M","M"],"time":52,"solution":{"4,2":{"t":"D","o":0},"4,0":{"t":"M","o":1},"1,2":{"t":"M","o":0}}},{"w":7,"h":7,"walls":[[1,0]],"checks":[],"entry":{"x":0,"y":5,"d":0,"c":"W"},"exits":[{"x":6,"y":5,"d":0,"c":"G"},{"x":2,"y":0,"d":3,"c":"R"}],"pieces":["D","X"],"time":43,"solution":{"2,5":{"t":"D","o":0},"2,6":{"t":"X","o":0}}},{"w":8,"h":8,"walls":[[0,2]],"checks":[[5,5,"R"]],"entry":{"x":7,"y":1,"d":2,"c":"W"},"exits":[{"x":0,"y":1,"d":2,"c":"G"},{"x":0,"y":6,"d":2,"c":"R"}],"pieces":["D","X","M"],"time":52,"solution":{"5,1":{"t":"D","o":0},"5,0":{"t":"X","o":0},"5,6":{"t":"M","o":0}}},{"w":8,"h":8,"walls":[[3,7],[6,0]],"checks":[[2,7,"G"]],"entry":{"x":7,"y":6,"d":2,"c":"W"},"exits":[{"x":4,"y":7,"d":1,"c":"R"},{"x":4,"y":0,"d":3,"c":"B"},{"x":1,"y":0,"d":3,"c":"G"}],"pieces":["D","M","P"],"time":52,"solution":{"4,6":{"t":"D","o":0},"3,6":{"t":"P","o":0},"1,7":{"t":"M","o":1}}},{"w":7,"h":7,"walls":[[6,4]],"checks":[[2,1,"R"],[1,3,"W"]],"entry":{"x":1,"y":6,"d":3,"c":"W"},"exits":[{"x":6,"y":0,"d":3,"c":"R"}],"pieces":["r","M","M"],"time":57,"solution":{"1,1":{"t":"M","o":0},"6,1":{"t":"M","o":0},"1,2":{"t":"r","o":0}}},{"w":8,"h":8,"walls":[[0,1],[3,4]],"checks":[[5,1,"B"]],"entry":{"x":2,"y":7,"d":3,"c":"W"},"exits":[{"x":2,"y":0,"d":3,"c":"G"},{"x":6,"y":7,"d":1,"c":"B"}],"pieces":["D","g","M"],"time":52,"solution":{"2,1":{"t":"D","o":0},"1,1":{"t":"g","o":0},"6,1":{"t":"M","o":1}}},{"w":8,"h":8,"walls":[[1,2]],"checks":[],"entry":{"x":7,"y":4,"d":2,"c":"W"},"exits":[{"x":6,"y":7,"d":1,"c":"R"},{"x":3,"y":0,"d":3,"c":"G"},{"x":0,"y":0,"d":2,"c":"B"}],"pieces":["D","U","U"],"time":52,"solution":{"6,4":{"t":"D","o":0},"3,4":{"t":"U","o":3},"6,0":{"t":"U","o":1}}},{"w":8,"h":8,"walls":[[1,1]],"checks":[],"entry":{"x":7,"y":2,"d":2,"c":"W"},"exits":[{"x":6,"y":0,"d":3,"c":"B"},{"x":6,"y":7,"d":1,"c":"R"},{"x":5,"y":7,"d":1,"c":"G"},{"x":1,"y":7,"d":1,"c":"G"}],"pieces":["D","S","M"],"time":52,"solution":{"6,2":{"t":"D","o":0},"5,2":{"t":"S","o":0},"1,2":{"t":"M","o":0}}},{"w":8,"h":8,"walls":[[0,2]],"checks":[],"entry":{"x":0,"y":3,"d":0,"c":"W"},"exits":[{"x":0,"y":0,"d":2,"c":"R"},{"x":1,"y":7,"d":1,"c":"B"},{"x":7,"y":3,"d":0,"c":"G"},{"x":6,"y":7,"d":1,"c":"R"}],"pieces":["D","T","M"],"time":52,"solution":{"1,3":{"t":"D","o":0},"1,0":{"t":"T","o":0},"6,0":{"t":"M","o":1}}},{"w":9,"h":9,"walls":[[0,2],[0,8]],"checks":[[2,3,"R"]],"entry":{"x":0,"y":6,"d":0,"c":"W"},"exits":[{"x":8,"y":6,"d":0,"c":"G"},{"x":8,"y":8,"d":0,"c":"B"},{"x":8,"y":1,"d":0,"c":"R"}],"pieces":["D","U","U"],"time":62,"solution":{"2,6":{"t":"D","o":0},"2,1":{"t":"U","o":2},"2,8":{"t":"U","o":3}}},{"w":9,"h":9,"walls":[[6,1],[0,2]],"checks":[],"entry":{"x":3,"y":8,"d":3,"c":"W"},"exits":[{"x":3,"y":0,"d":3,"c":"G"},{"x":8,"y":4,"d":0,"c":"B"},{"x":0,"y":8,"d":1,"c":"R"},{"x":8,"y":7,"d":0,"c":"R"}],"pieces":["D","S","M"],"time":67,"solution":{"3,4":{"t":"D","o":0},"0,4":{"t":"M","o":0},"0,7":{"t":"S","o":1}}},{"w":9,"h":9,"walls":[[4,5],[1,8]],"checks":[],"entry":{"x":5,"y":8,"d":3,"c":"W"},"exits":[{"x":0,"y":6,"d":2,"c":"R"},{"x":5,"y":0,"d":3,"c":"G"},{"x":6,"y":0,"d":3,"c":"B"},{"x":0,"y":0,"d":3,"c":"R"}],"pieces":["D","S","U"],"time":67,"solution":{"5,6":{"t":"D","o":0},"6,6":{"t":"U","o":0},"0,6":{"t":"S","o":1}}},{"w":8,"h":8,"walls":[[7,6]],"checks":[[1,2,"R"],[6,1,"R"]],"entry":{"x":2,"y":0,"d":1,"c":"W"},"exits":[{"x":0,"y":1,"d":2,"c":"B"},{"x":2,"y":7,"d":1,"c":"G"},{"x":7,"y":2,"d":0,"c":"R"}],"pieces":["D","F","F"],"time":62,"solution":{"2,1":{"t":"D","o":0},"7,1":{"t":"F","o":0},"0,2":{"t":"F","o":0}}},{"w":9,"h":9,"walls":[[4,1],[6,2],[8,5]],"checks":[[6,1,"R"]],"entry":{"x":0,"y":7,"d":0,"c":"W"},"exits":[{"x":7,"y":8,"d":1,"c":"B"}],"pieces":["D","g","b","M"],"time":71,"solution":{"7,7":{"t":"D","o":0},"7,1":{"t":"M","o":1},"8,7":{"t":"b","o":0},"5,1":{"t":"g","o":0}}},{"w":8,"h":8,"walls":[[0,3],[7,7]],"checks":[[2,3,"R"],[5,1,"G"]],"entry":{"x":5,"y":7,"d":3,"c":"W"},"exits":[{"x":7,"y":0,"d":3,"c":"B"}],"pieces":["D","X","X","M"],"time":66,"solution":{"5,3":{"t":"D","o":0},"5,0":{"t":"X","o":0},"1,3":{"t":"X","o":0},"7,3":{"t":"M","o":0}}},{"w":9,"h":9,"walls":[[0,2],[7,1],[8,2]],"checks":[[2,2,"G"]],"entry":{"x":6,"y":8,"d":3,"c":"W"},"exits":[{"x":8,"y":7,"d":0,"c":"B"},{"x":0,"y":8,"d":1,"c":"R"}],"pieces":["D","r","M","M"],"time":66,"solution":{"6,7":{"t":"D","o":0},"6,2":{"t":"M","o":1},"0,7":{"t":"M","o":0},"1,2":{"t":"r","o":0}}},{"w":9,"h":9,"walls":[[5,3],[4,3],[0,8],[3,8]],"checks":[[2,3,"B"],[1,2,"G"]],"entry":{"x":1,"y":8,"d":3,"c":"W"},"exits":[{"x":8,"y":1,"d":0,"c":"G"}],"pieces":["D","X","X","M"],"time":76,"solution":{"1,3":{"t":"D","o":0},"3,3":{"t":"X","o":0},"0,3":{"t":"X","o":0},"1,1":{"t":"M","o":0}}},{"w":10,"h":10,"walls":[[3,1],[4,0],[1,0]],"checks":[],"entry":{"x":9,"y":1,"d":2,"c":"W"},"exits":[{"x":6,"y":0,"d":3,"c":"B"},{"x":4,"y":9,"d":1,"c":"G"},{"x":0,"y":8,"d":2,"c":"R"}],"pieces":["D","S","X","M"],"time":76,"solution":{"6,1":{"t":"D","o":0},"6,8":{"t":"S","o":0},"6,9":{"t":"X","o":0},"4,1":{"t":"M","o":0}}},{"w":8,"h":8,"walls":[[7,0],[2,7]],"checks":[[0,1,"R"],[4,0,"R"]],"entry":{"x":6,"y":7,"d":3,"c":"W"},"exits":[{"x":7,"y":2,"d":0,"c":"B"},{"x":6,"y":0,"d":3,"c":"G"}],"pieces":["D","X","M","M"],"time":66,"solution":{"6,2":{"t":"D","o":0},"0,2":{"t":"M","o":1},"0,0":{"t":"M","o":0},"5,0":{"t":"X","o":0}}},{"w":8,"h":8,"walls":[[3,2],[0,6]],"checks":[[3,4,"R"],[3,1,"G"]],"entry":{"x":4,"y":7,"d":3,"c":"W"},"exits":[{"x":7,"y":5,"d":0,"c":"B"},{"x":3,"y":0,"d":3,"c":"G"}],"pieces":["D","b","M","P"],"time":66,"solution":{"4,5":{"t":"D","o":0},"4,2":{"t":"P","o":1},"3,5":{"t":"M","o":1},"3,3":{"t":"b","o":0}}},{"w":8,"h":8,"walls":[[7,5]],"checks":[[4,3,"R"],[6,1,"W"]],"entry":{"x":7,"y":3,"d":2,"c":"W"},"exits":[{"x":6,"y":0,"d":3,"c":"B"},{"x":0,"y":0,"d":3,"c":"R"}],"pieces":["S","r","b","M"],"time":66,"solution":{"5,3":{"t":"r","o":0},"6,3":{"t":"S","o":1},"6,0":{"t":"b","o":0},"0,3":{"t":"M","o":1}}},{"w":9,"h":9,"walls":[[7,5],[0,3]],"checks":[[2,7,"R"],[3,1,"B"]],"entry":{"x":8,"y":2,"d":2,"c":"W"},"exits":[{"x":0,"y":2,"d":2,"c":"G"},{"x":5,"y":8,"d":1,"c":"B"}],"pieces":["D","X","M","M"],"time":71,"solution":{"2,2":{"t":"D","o":0},"2,8":{"t":"X","o":0},"2,1":{"t":"M","o":0},"5,1":{"t":"M","o":1}}},{"w":9,"h":9,"walls":[[3,1],[7,4]],"checks":[],"entry":{"x":8,"y":5,"d":2,"c":"W"},"exits":[{"x":6,"y":0,"d":3,"c":"B"},{"x":0,"y":7,"d":2,"c":"R"},{"x":0,"y":8,"d":1,"c":"G"},{"x":5,"y":0,"d":3,"c":"R"}],"pieces":["D","S","M","M"],"time":66,"solution":{"6,5":{"t":"D","o":0},"0,5":{"t":"M","o":0},"6,7":{"t":"M","o":0},"5,7":{"t":"S","o":1}}},{"w":9,"h":9,"walls":[[7,8],[3,0]],"checks":[],"entry":{"x":0,"y":6,"d":0,"c":"W"},"exits":[{"x":1,"y":8,"d":1,"c":"B"},{"x":6,"y":8,"d":1,"c":"G"},{"x":6,"y":0,"d":3,"c":"R"},{"x":8,"y":1,"d":0,"c":"G"}],"pieces":["D","T","M","M"],"time":66,"solution":{"1,6":{"t":"D","o":0},"6,6":{"t":"T","o":0},"6,1":{"t":"M","o":0},"1,1":{"t":"M","o":0}}},{"w":9,"h":9,"walls":[[8,3],[3,3]],"checks":[[1,2,"B"]],"entry":{"x":7,"y":0,"d":1,"c":"W"},"exits":[{"x":8,"y":2,"d":0,"c":"R"},{"x":0,"y":8,"d":2,"c":"G"},{"x":4,"y":0,"d":3,"c":"G"}],"pieces":["D","S","X","M"],"time":66,"solution":{"7,2":{"t":"D","o":0},"7,8":{"t":"M","o":0},"0,2":{"t":"X","o":0},"4,8":{"t":"S","o":1}}},{"w":9,"h":9,"walls":[[0,2],[2,1]],"checks":[[1,3,"R"]],"entry":{"x":0,"y":4,"d":0,"c":"W"},"exits":[{"x":3,"y":0,"d":3,"c":"G"},{"x":8,"y":7,"d":0,"c":"B"},{"x":8,"y":0,"d":0,"c":"R"}],"pieces":["D","M","M","M"],"time":76,"solution":{"1,4":{"t":"D","o":0},"3,4":{"t":"M","o":0},"1,7":{"t":"M","o":1},"1,0":{"t":"M","o":0}}},{"w":8,"h":8,"walls":[[4,0]],"checks":[[2,6,"R"],[1,4,"R"]],"entry":{"x":2,"y":7,"d":3,"c":"W"},"exits":[{"x":2,"y":0,"d":3,"c":"G"},{"x":7,"y":3,"d":0,"c":"B"},{"x":5,"y":0,"d":3,"c":"R"}],"pieces":["D","M","M","M"],"time":66,"solution":{"2,3":{"t":"D","o":0},"1,3":{"t":"M","o":0},"1,6":{"t":"M","o":1},"5,6":{"t":"M","o":0}}},{"w":8,"h":8,"walls":[[6,5],[4,4]],"checks":[[6,2,"B"],[5,1,"B"]],"entry":{"x":7,"y":3,"d":2,"c":"W"},"exits":[{"x":7,"y":7,"d":1,"c":"R"},{"x":0,"y":1,"d":2,"c":"B"},{"x":1,"y":7,"d":1,"c":"G"}],"pieces":["D","M","M","P"],"time":66,"solution":{"6,3":{"t":"D","o":0},"6,4":{"t":"P","o":1},"1,3":{"t":"M","o":0},"6,1":{"t":"M","o":1}}},{"w":9,"h":9,"walls":[[0,1],[1,5]],"checks":[[6,3,"R"],[1,3,"B"],[8,3,"R"]],"entry":{"x":5,"y":0,"d":1,"c":"W"},"exits":[{"x":5,"y":8,"d":1,"c":"G"},{"x":8,"y":8,"d":1,"c":"R"}],"pieces":["D","X","M","P"],"time":71,"solution":{"5,3":{"t":"D","o":0},"7,3":{"t":"P","o":0},"0,3":{"t":"X","o":0},"8,2":{"t":"M","o":1}}},{"w":9,"h":9,"walls":[[6,2],[2,7],[3,0],[5,2],[8,6],[6,1]],"checks":[[3,3,"B"],[5,7,"G"],[2,2,"W"]],"entry":{"x":0,"y":2,"d":0,"c":"W"},"exits":[{"x":8,"y":7,"d":0,"c":"G"},{"x":3,"y":8,"d":1,"c":"B"}],"pieces":["D","F","F","X"],"time":71,"solution":{"3,2":{"t":"D","o":0},"3,1":{"t":"X","o":0},"4,2":{"t":"F","o":0},"4,7":{"t":"F","o":0}}},{"w":9,"h":9,"walls":[[0,0],[1,6]],"checks":[[8,5,"B"],[2,1,"G"]],"entry":{"x":2,"y":8,"d":3,"c":"W"},"exits":[{"x":0,"y":7,"d":2,"c":"R"},{"x":8,"y":4,"d":0,"c":"B"},{"x":0,"y":4,"d":2,"c":"B"}],"pieces":["D","T","X","M"],"time":66,"solution":{"2,7":{"t":"D","o":0},"8,7":{"t":"M","o":0},"2,0":{"t":"X","o":0},"8,4":{"t":"T","o":0}}},{"w":9,"h":9,"walls":[[8,4],[2,1]],"checks":[[5,2,"G"]],"entry":{"x":6,"y":8,"d":3,"c":"W"},"exits":[{"x":8,"y":5,"d":0,"c":"B"},{"x":8,"y":1,"d":0,"c":"G"},{"x":0,"y":2,"d":2,"c":"G"},{"x":0,"y":0,"d":3,"c":"R"}],"pieces":["D","T","M","P"],"time":71,"solution":{"6,5":{"t":"D","o":0},"6,2":{"t":"T","o":0},"0,5":{"t":"M","o":1},"7,2":{"t":"P","o":0}}}];
 
 var NS = 'http://www.w3.org/2000/svg';
 
@@ -284,20 +309,30 @@ function tok(n) { return css.getPropertyValue(n).trim(); }
 var C = { bg: tok('--bg'), table: tok('--table'), line: tok('--line'), wall: tok('--wall'), ink: tok('--ink'),
   muted: tok('--muted'), beam: tok('--beam'), det: tok('--detector'), glass: tok('--glass') };
 
-var NAMES = { M: 'Miroir', U: 'Miroir sans tain', P: 'Prisme', S: 'Séparateur', T: 'Diviseur en T', F: 'Fibre optique' };
-var ART = { M: 'le miroir', U: 'le miroir sans tain', P: 'le prisme', S: 'le séparateur', T: 'le diviseur en T', F: 'la fibre optique' };
+var NAMES = { M: 'Miroir', U: 'Miroir sans tain', P: 'Prisme', S: 'Séparateur', T: 'Diviseur en T', F: 'Fibre optique', D: 'Diffracteur', X: 'Piège à lumière', r: 'Filtre rouge', g: 'Filtre vert', b: 'Filtre bleu' };
+var COL = { R: C.beam, G: '#3ddc84', B: '#4da3ff', W: '#f4f8fc' };
+var GLOW = { R: '#3a0f18', G: '#0f3a22', B: '#10294a', W: '#3c4654' };
+var COLNAME = { R: 'rouge', G: 'vert', B: 'bleu', W: 'blanc' };
+var ART = { M: 'le miroir', U: 'le miroir sans tain', P: 'le prisme', S: 'le séparateur', T: 'le diviseur en T', F: 'la fibre optique', D: 'le diffracteur', X: 'le piège à lumière', r: 'le filtre rouge', g: 'le filtre vert', b: 'le filtre bleu' };
 var DESC = {
   M: 'renvoie le faisceau à 90°, des deux côtés.',
   U: 'renvoie le faisceau à 90° sur sa face brillante, et le laisse passer tout droit par l\'autre face. Quatre positions.',
   P: 'décale le faisceau d\'une case en diagonale, sans changer sa direction.',
   S: 'laisse passer le faisceau et en renvoie une copie à 90°. Chaque sortie doit être éclairée.',
   T: 'coupe le faisceau en deux, un vers la gauche et un vers la droite. Rien ne passe tout droit.',
-  F: 'deux extrémités à poser. Le faisceau entre par l\'une et ressort par l\'autre, dans la même direction.'
+  F: 'deux extrémités à poser. Le faisceau entre par l\'une et ressort par l\'autre, dans la même direction.',
+  D: 'sépare la lumière blanche en trois faisceaux : rouge à gauche, vert tout droit, bleu à droite, dans le sens du faisceau. Une lumière déjà colorée le traverse sans changer.',
+  X: 'absorbe le faisceau qui le touche, sans faire échouer le tir.',
+  r: 'laisse passer le rouge, teinte le blanc en rouge, absorbe le vert et le bleu.',
+  g: 'laisse passer le vert, teinte le blanc en vert, absorbe le rouge et le bleu.',
+  b: 'laisse passer le bleu, teinte le blanc en bleu, absorbe le rouge et le vert.'
 };
 function news(i) {
   var seen = {}, hadChecks = false, out = [];
   for (var n = 0; n < i; n++) { LEVELS[n].pieces.forEach(function (t) { seen[t] = 1; }); if (LEVELS[n].checks.length) hadChecks = true; }
   LEVELS[i].pieces.forEach(function (t) { if (!seen[t]) { seen[t] = 1; out.push('Nouveau : ' + ART[t] + '.'); } });
+  var hadWhite = false; for (var m = 0; m < i; m++) if (LEVELS[m].entry.c === 'W') hadWhite = true;
+  if (!hadWhite && LEVELS[i].entry.c === 'W') out.push('Nouveau : la source est blanche, et chaque sortie n\'accepte que sa couleur.');
   if (!hadChecks && LEVELS[i].checks.length) out.push('Nouveau : les balises, à traverser avant la sortie.');
   return out.join(' ');
 }
@@ -334,6 +369,23 @@ function drawPiece(t, o, parent) {
     el('circle', { r: 0.24, fill: C.glass, 'fill-opacity': 0.25 }, g);
     el('circle', { r: 0.12, fill: '#ffffff' }, g);
     el('circle', { r: 0.06, fill: C.glass }, g);
+  } else if (t === 'D') {
+    // Diffracteur — réseau de traits fins et les trois couleurs produites
+    el('rect', { x: -0.34, y: -0.34, width: 0.68, height: 0.68, rx: 0.08, fill: '#0c131b', stroke: '#c5d4e8', 'stroke-width': 0.05 }, g);
+    [-0.2, -0.1, 0, 0.1, 0.2].forEach(function (x) { el('line', { x1: x, y1: -0.24, x2: x, y2: 0.06, stroke: '#f4f8fc', 'stroke-opacity': 0.75, 'stroke-width': 0.03 }, g); });
+    el('circle', { cx: -0.18, cy: 0.2, r: 0.07, fill: COL.R }, g);
+    el('circle', { cx: 0, cy: 0.2, r: 0.07, fill: COL.G }, g);
+    el('circle', { cx: 0.18, cy: 0.2, r: 0.07, fill: COL.B }, g);
+  } else if (t === 'X') {
+    // Piège à lumière — puits noir
+    el('circle', { r: 0.34, fill: '#04070b', stroke: C.wall, 'stroke-width': 0.07 }, g);
+    el('circle', { r: 0.2, fill: 'none', stroke: C.wall, 'stroke-opacity': 0.5, 'stroke-width': 0.03 }, g);
+    el('circle', { r: 0.08, fill: 'none', stroke: C.wall, 'stroke-opacity': 0.35, 'stroke-width': 0.03 }, g);
+  } else if (t === 'r' || t === 'g' || t === 'b') {
+    // Filtre coloré — pastille de verre teinté dans sa monture
+    var fc = COL[t.toUpperCase()];
+    el('circle', { r: 0.33, fill: fc, 'fill-opacity': 0.4, stroke: fc, 'stroke-width': 0.07 }, g);
+    el('path', { d: 'M -0.18 -0.1 A 0.22 0.22 0 0 1 0.02 -0.22', fill: 'none', stroke: '#ffffff', 'stroke-opacity': 0.7, 'stroke-width': 0.04, 'stroke-linecap': 'round' }, g);
   } else if (t === 'S') {
     // Séparateur — carré verre avec diagonale
     el('rect', { x: -0.34, y: -0.34, width: 0.68, height: 0.68, rx: 0.06, fill: C.glass, 'fill-opacity': 0.2, stroke: C.glass, 'stroke-width': 0.05 }, f);
@@ -381,17 +433,19 @@ function buildBoard() {
       var tx = cx + (horiz ? 0 : s * 0.36), ty = cy + (horiz ? s * 0.36 : 0);
       el('line', { x1: tx - (horiz ? 0.16 : 0), y1: ty - (horiz ? 0 : 0.16), x2: tx + (horiz ? 0.16 : 0), y2: ty + (horiz ? 0 : 0.16), stroke: C.wall, 'stroke-width': 0.09, 'stroke-linecap': 'round' }, board);
     });
-    var col = isExit ? C.det : C.beam;
+    var col = isExit ? (p.c ? COL[p.c] : C.det) : COL[p.c || 'R'];
+    if (isExit && p.c) el('line', { x1: cx + DX[side] * 0.07 - (horiz ? 0 : 0.3), y1: cy + DY[side] * 0.07 - (horiz ? 0.3 : 0), x2: cx + DX[side] * 0.07 + (horiz ? 0 : 0.3), y2: cy + DY[side] * 0.07 + (horiz ? 0.3 : 0), stroke: col, 'stroke-width': 0.09, 'stroke-linecap': 'round' }, board);
     var t = el('text', { x: cx + DX[side] * 0.58, y: cy + DY[side] * 0.58, 'text-anchor': 'middle', 'dominant-baseline': 'central',
-      'font-family': 'Saira Condensed, Arial Narrow, sans-serif', 'font-weight': 700, 'font-size': 0.44, fill: col, 'fill-opacity': isExit ? 0.55 : 1 }, board);
+      'font-family': 'Saira Condensed, Arial Narrow, sans-serif', 'font-weight': 700, 'font-size': 0.44, fill: col, 'fill-opacity': isExit ? (p.c ? 0.7 : 0.55) : 1 }, board);
     t.textContent = label;
     return t;
   }
   port(L.entry, (L.entry.d + 2) % 4, 'E', false);
   L.exits.forEach(function (s) { portEls.push(port(s, s.d, 'S', true)); });
   L.checks.forEach(function (c) {
-    el('circle', { cx: c[0] + 0.5, cy: c[1] + 0.5, r: 0.3, fill: 'none', stroke: C.det, 'stroke-opacity': 0.75, 'stroke-width': 0.035, 'stroke-dasharray': '0.09 0.07' }, board);
-    checkEls.push(el('circle', { cx: c[0] + 0.5, cy: c[1] + 0.5, r: 0.1, fill: C.det, 'fill-opacity': 0.3 }, board));
+    var cc = c[2] ? COL[c[2]] : C.det;
+    el('circle', { cx: c[0] + 0.5, cy: c[1] + 0.5, r: 0.3, fill: 'none', stroke: cc, 'stroke-opacity': 0.85, 'stroke-width': 0.035, 'stroke-dasharray': '0.09 0.07' }, board);
+    checkEls.push(el('circle', { cx: c[0] + 0.5, cy: c[1] + 0.5, r: 0.1, fill: cc, 'fill-opacity': 0.3 }, board));
   });
   gPieces = el('g', {}, board);
   gBeam = el('g', { 'pointer-events': 'none' }, board);
@@ -455,7 +509,7 @@ function renderStatus() {
   st.className = 'status' + (S.phase === 'won' || S.phase === 'done' ? ' won' : S.phase === 'lost' ? ' lost' : '');
   var title = '', text = '', label = '', dis = false; alt.hidden = true;
   var nc = L.checks.length;
-  var goal = 'Guidez le faisceau de E vers ' + (ex > 1 ? 'les ' + ex + ' sorties S' : 'la sortie S') + (nc ? ' en passant par ' + (nc > 1 ? 'les ' + nc + ' balises' : 'la balise') : '') + '.';
+  var goal = 'Guidez le faisceau de E vers ' + (ex > 1 ? 'les ' + ex + ' sorties S' : 'la sortie S') + (nc ? ' en passant par ' + (nc > 1 ? 'les ' + nc + ' balises' : 'la balise') : '') + '.' + (L.entry.c === 'W' ? ' Chaque couleur a sa sortie et ses balises.' : '');
   if (S.phase === 'ready') { title = 'Niveau ' + (S.lvl + 1); text = (news(S.lvl) ? news(S.lvl) + ' ' : '') + goal + ' Le chrono part à la première action.'; label = 'Démarrer'; }
   else if (S.phase === 'place') { title = 'Placez vos pièces'; text = goal + ' Le laser s\'allume à la fin du temps.'; label = 'Allumer le laser'; }
   else if (S.phase === 'fire') { title = 'Tir en cours'; text = ''; label = 'Tir en cours'; dis = true; }
@@ -500,8 +554,8 @@ function fire() {
   var gGlow = el('g', {}, gBeam), gCore = el('g', {}, gBeam);
   var lines = tr.segs.map(function (s) {
     var a = { x1: s.x1 + 0.5, y1: s.y1 + 0.5, x2: s.x1 + 0.5, y2: s.y1 + 0.5, 'stroke-linecap': 'round' };
-    var glow = el('line', Object.assign({ 'stroke-width': 0.18, stroke: '#3a0f18' }, a), gGlow);
-    var core = el('line', Object.assign({ 'stroke-width': 0.055, stroke: C.beam }, a), gCore);
+    var glow = el('line', Object.assign({ 'stroke-width': 0.18, stroke: GLOW[s.c] || GLOW.R }, a), gGlow);
+    var core = el('line', Object.assign({ 'stroke-width': 0.055, stroke: COL[s.c] || C.beam }, a), gCore);
     return { s: s, els: [glow, core] };
   });
   var maxStep = 0; tr.segs.forEach(function (s) { if (s.step > maxStep) maxStep = s.step; });
@@ -538,7 +592,9 @@ function finish(tr) {
     S.attempts++;
     var lit = tr.exits.length, ex = L.exits.length;
     var nc = L.checks.length, miss = [];
-    if (tr.fails.length) miss.push('Le faisceau a été arrêté par un obstacle.');
+    var wrong = tr.fails.filter(function (f) { return f.wrong; })[0];
+    if (wrong) miss.push('Le faisceau ' + COLNAME[wrong.c] + ' arrive à une sortie qui n\'est pas de sa couleur.');
+    else if (tr.fails.length) miss.push('Le faisceau a été arrêté par un obstacle.');
     else if (lit < ex) miss.push('Le faisceau tourne en rond sans atteindre toutes les sorties.');
     if (ex > 1 && lit < ex) miss.push('Sorties éclairées : ' + lit + ' sur ' + ex + '.');
     if (tr.checks.length < nc) miss.push('Balises traversées : ' + tr.checks.length + ' sur ' + nc + '.');
@@ -637,7 +693,7 @@ document.addEventListener('keydown', function (ev) {
   var tag = ev.target && ev.target.tagName;
   if (tag === 'SELECT' || tag === 'BUTTON' || tag === 'INPUT' || ev.ctrlKey || ev.metaKey || ev.altKey) return;
   if (ev.key === ' ' || ev.key === 'Enter') { ev.preventDefault(); if (!$('go').disabled) $('go').click(); }
-  else if (/^[1-6]$/.test(ev.key)) { var t = types()[+ev.key - 1]; if (t) { S.sel = t; renderTray(); } }
+  else if (/^[1-9]$/.test(ev.key)) { var t = types()[+ev.key - 1]; if (t) { S.sel = t; renderTray(); } }
 });
 // Installation (Android, PC) et indication pour iOS
 (function () {
